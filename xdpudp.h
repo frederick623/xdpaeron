@@ -63,8 +63,6 @@
 #include <linux/if_link.h>   // XDP_FLAGS_*
 #include <xdp/xsk.h>         // libxdp; if you only have libbpf use <bpf/xsk.h>
 
-#include "feed/dispatch.h"
-
 namespace mde::feed {
 namespace detail {
 
@@ -286,12 +284,9 @@ public:
         : listenAddr_(std::move(listenAddr)), port_(port),
           nic_(std::move(nic)) {}
 
-    // Reader thread receives datagrams; onPacket runs on the consumer thread.
     template <class OnPacket>
     void run(OnPacket&& onPacket) {
-        pumpThreaded(
-            [this](auto&& sink) { this->readLoop(std::forward<decltype(sink)>(sink)); },
-            std::forward<OnPacket>(onPacket));
+        readLoop(std::forward<OnPacket>(onPacket));
     }
 
 private:
@@ -366,9 +361,7 @@ public:
 
     template <class OnPacket>
     void run(OnPacket&& onPacket) {
-        pumpThreaded(
-            [this](auto&& sink) { this->readLoop(std::forward<decltype(sink)>(sink)); },
-            std::forward<OnPacket>(onPacket));
+        readLoop(std::forward<OnPacket>(onPacket));
     }
 
 private:

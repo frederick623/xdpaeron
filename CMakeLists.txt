@@ -5,12 +5,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    add_subdirectory(
-        ${CMAKE_CURRENT_SOURCE_DIR}/../MPMCSimpleQueue
-        ${CMAKE_CURRENT_BINARY_DIR}/mpmcqueue
-    )
-endif()
 
 find_package(Threads REQUIRED)
 
@@ -42,13 +36,12 @@ if(UNIX AND NOT APPLE)
     find_library(XDP_LIBRARY NAMES xdp)
     find_library(BPF_LIBRARY NAMES bpf)
 
-    if(XDPAERON_HAVE_AERON AND XDP_INCLUDE_DIR AND XDP_LIBRARY AND BPF_LIBRARY AND TARGET mpmcqueue)
+    if(XDPAERON_HAVE_AERON AND XDP_INCLUDE_DIR AND XDP_LIBRARY AND BPF_LIBRARY)
         add_executable(xdp_udp_relayer relayer.cpp)
         target_include_directories(xdp_udp_relayer PRIVATE ${XDP_INCLUDE_DIR})
         target_link_libraries(xdp_udp_relayer
             PRIVATE
                 xdpaeron::ipc
-                mpmcqueue
                 ${XDP_LIBRARY}
                 ${BPF_LIBRARY}
                 Threads::Threads

@@ -12,7 +12,6 @@
 #include <thread>
 #include <utility>
 
-#include "feed/dispatch.h"
 
 #if defined(TRADEENGINE_HAVE_AERON)
 #  if __has_include(<Aeron.h>)
@@ -94,9 +93,7 @@ public:
 
     template <class OnPacket>
     void run(OnPacket&& onPacket) {
-        pumpThreaded(
-            [this](auto&& sink) { this->readLoop(std::forward<decltype(sink)>(sink)); },
-            std::forward<OnPacket>(onPacket));
+        readLoop(std::forward<OnPacket>(onPacket));
     }
 
 private:
