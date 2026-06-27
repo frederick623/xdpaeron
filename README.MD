@@ -35,10 +35,7 @@ The main entry point (`relayer.cpp`) wires these two components together as a st
 | `aeron.h` | `AeronIpcPublisher` and `AeronIpcSource` — thin wrappers around the Aeron C++ client. Falls back to no-op stubs when the Aeron library is not present. |
 | `LICENSE` | Project license. |
 
-The code lives in the `mde::feed` namespace and is part of a larger market-data / trading-engine ecosystem. It depends on two sibling paths (not included in this repository):
-
-- `../MPMCSimpleQueue` — a lock-free multi-producer/multi-consumer queue used by `pumpThreaded` to hand frames from the XDP reader thread to the consumer callback.
-- `feed/dispatch.h` (two levels up) — provides the `pumpThreaded` helper that drives the reader/consumer threading model.
+The code lives in the `mde::feed` namespace and is part of a larger market-data / trading-engine ecosystem.
 
 ---
 
@@ -59,7 +56,6 @@ The build system uses CMake with C++20. Feature availability is detected at conf
 
 - If the **Aeron C++ client** is found: real publisher/subscriber classes are compiled; otherwise stubs are used.
 - If **libxdp**, **libbpf**, and **Aeron** are all present on Linux: the `xdp_udp_relayer` executable is built.
-- The `MPMCSimpleQueue` sibling project is pulled in as a CMake subdirectory.
 
 ---
 
@@ -159,9 +155,9 @@ src.run([](const uint8_t* data, uint16_t len) { ... });
 
 ## Threading Model
 
-Both `UdpSource`/`UdpConnector` and `AeronIpcSource` use `pumpThreaded` (from `feed/dispatch.h`) to decouple I/O from consumption:
+Both `UdpSource`/`UdpConnector` and `AeronIpcSource` deliver payloads directly via callback:
 
-- A dedicated **reader thread** runs the AF_XDP or Aeron poll loop, placing payloads into a lock-free `MPMCSimpleQueue`.
-- The **caller's thread** drains the queue and invokes the user-supplied `onPacket` callback.
+- The **reader thread** runs the AF_XDP or Aeron poll loop and invokes the user-supplied `onPacket` callback directly.
+- This approach minimizes latency by eliminating intermediate queue buffering.
 
-This ensures the kernel-bypass receive loop is never stalled by slow consumer logic.
+High-performance applications can offload heavy consumer logic to a separate thread if needed.
