@@ -50,4 +50,39 @@ if(UNIX AND NOT APPLE)
     else()
         message(STATUS "xdpaeron: xdp_udp_relayer disabled (needs Linux, libxdp, libbpf, Aeron)")
     endif()
+
+    # ── Unit tests (no libxdp required: stub headers are used) ────────────────
+    enable_testing()
+    add_executable(xdpaeron_tests tests/test_parse.cpp)
+    target_compile_features(xdpaeron_tests PRIVATE cxx_std_20)
+    target_include_directories(xdpaeron_tests
+        PRIVATE
+            # Stub xdp/xsk.h must come first so it shadows the real libxdp header.
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
+            # Repo root so that xdpudp.h and aeron.h are found.
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(xdpaeron_tests PRIVATE Threads::Threads)
+    add_test(NAME parse_tests COMMAND xdpaeron_tests)
+    message(STATUS "xdpaeron: unit tests enabled (target: xdpaeron_tests)")
+
+    # ── Benchmarks (requires Google Benchmark; graceful skip if absent) ────────
+    find_package(benchmark QUIET)
+    if(benchmark_FOUND)
+        add_executable(xdpaeron_bench benchmarks/bench_udp_path.cpp)
+        target_compile_features(xdpaeron_bench PRIVATE cxx_std_20)
+        target_include_directories(xdpaeron_bench
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
+                ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        target_link_libraries(xdpaeron_bench
+            PRIVATE
+                benchmark::benchmark
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: benchmarks enabled (target: xdpaeron_bench)")
+    else()
+        message(STATUS "xdpaeron: benchmarks disabled (install libbenchmark-dev to enable)")
+    endif()
 endif()
