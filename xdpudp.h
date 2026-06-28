@@ -23,15 +23,15 @@
 //      UdpSource(listenAddr, port, nic="")
 //          listenAddr – dst IP filter ("" or "0.0.0.0" = any; multicast OK)
 //          port       – dst UDP port filter
-//          nic        – NIC name to attach to.  If empty, falls back to
-//                       $MDE_XDP_IFACE, then "eth0".  (Was the multicast iface
-//                       IP in udp.h — under XDP it is the interface *name*.)
+//          nic        – NIC name to attach to.  If empty, defaults to "eth0".
+//                       (Was the multicast iface IP in udp.h — under XDP it
+//                       is the interface *name*.)
 //
-//      UdpConnector(remoteHost, remotePort, localPort=0)
+//      UdpConnector(remoteHost, remotePort, localPort=0, nic="")
 //          remoteHost – src IP filter (DNS name or dotted-decimal)
 //          remotePort – src UDP port filter
 //          localPort  – if non-zero, also require dst port == localPort
-//          NIC chosen from $MDE_XDP_IFACE (default "eth0").
+//          nic        – NIC name to attach to.  If empty, defaults to "eth0".
 //
 //  NOTE: On Colima's virtio NIC zero-copy is typically unavailable; the socket
 //  falls back to copy/SKB mode automatically.  Functionally correct, but it is
@@ -147,7 +147,6 @@ inline uint32_t resolveIpv4(const std::string& host) {
 
 inline std::string pickNic(const std::string& explicitNic) {
     if (!explicitNic.empty()) return explicitNic;
-    if (const char* e = std::getenv("MDE_XDP_IFACE")) return e;
     return "eth0";
 }
 
@@ -354,9 +353,9 @@ private:
 class UdpConnector {
 public:
     UdpConnector(std::string remoteHost, uint16_t remotePort,
-                 uint16_t localPort = 0)
+                 uint16_t localPort = 0, std::string nic = "")
         : host_(std::move(remoteHost)), remotePort_(remotePort),
-          localPort_(localPort) {}
+          localPort_(localPort), nic_(std::move(nic)) {}
 
     template <class OnPacket>
     void run(OnPacket&& onPacket) {
@@ -366,7 +365,7 @@ public:
 private:
     template <class Sink>
     void readLoop(Sink&& sink) {
-        const std::string nic   = detail::pickNic("");  // env / eth0
+        const std::string nic   = detail::pickNic(nic_);
         const uint32_t wantSrc  = detail::resolveIpv4(host_);
         if (wantSrc == 0) {
             std::cerr << "[xdp-conn] cannot resolve \"" << host_ << "\"\n";
@@ -396,4 +395,5 @@ private:
     std::string host_;
     uint16_t    remotePort_;
     uint16_t    localPort_;
+    std::string nic_;
 };
