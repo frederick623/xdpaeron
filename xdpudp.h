@@ -227,14 +227,9 @@ inline void xdpReceiveLoop(const std::string& iface, uint32_t queueId,
     stop.store(false, std::memory_order_relaxed);
 
     while (!stop.load(std::memory_order_relaxed)) {
-        if (xsk_ring_prod__needs_wakeup(&fill)) {
-            // Kernel wants a kick to refill; a poll covers both wakeup and wait.
-            pollfd pfd{fd, POLLIN, 0};
-            poll(&pfd, 1, 200);
-        } else {
-            pollfd pfd{fd, POLLIN, 0};
-            poll(&pfd, 1, 200);
-        }
+        // Kernel wants a kick to refill; a poll covers both wakeup and wait.
+        pollfd pfd{fd, POLLIN, 0};
+        poll(&pfd, 1, 200); // 0 timeout: kick and immediately return
 
         uint32_t idxRx = 0;
         unsigned rcvd = xsk_ring_cons__peek(&rx, BATCH, &idxRx);
