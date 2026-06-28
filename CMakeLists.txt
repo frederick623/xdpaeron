@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.51)
+cmake_minimum_required(VERSION 3.15)
 project(xdpaeron CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -50,4 +50,19 @@ if(UNIX AND NOT APPLE)
     else()
         message(STATUS "xdpaeron: xdp_udp_relayer disabled (needs Linux, libxdp, libbpf, Aeron)")
     endif()
+
+    # ── Unit tests (no libxdp required: stub headers are used) ────────────────
+    enable_testing()
+    add_executable(xdpaeron_tests tests/test_parse.cpp)
+    target_compile_features(xdpaeron_tests PRIVATE cxx_std_20)
+    target_include_directories(xdpaeron_tests
+        PRIVATE
+            # Stub xdp/xsk.h must come first so it shadows the real libxdp header.
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
+            # Repo root so that xdpudp.h and aeron.h are found.
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(xdpaeron_tests PRIVATE Threads::Threads)
+    add_test(NAME parse_tests COMMAND xdpaeron_tests)
+    message(STATUS "xdpaeron: unit tests enabled (target: xdpaeron_tests)")
 endif()
