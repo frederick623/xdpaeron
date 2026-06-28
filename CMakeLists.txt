@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.51)
 project(xdpaeron CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -65,4 +65,24 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(xdpaeron_tests PRIVATE Threads::Threads)
     add_test(NAME parse_tests COMMAND xdpaeron_tests)
     message(STATUS "xdpaeron: unit tests enabled (target: xdpaeron_tests)")
+
+    # ── Benchmarks (requires Google Benchmark; graceful skip if absent) ────────
+    find_package(benchmark QUIET)
+    if(benchmark_FOUND)
+        add_executable(xdpaeron_bench benchmarks/bench_udp_path.cpp)
+        target_compile_features(xdpaeron_bench PRIVATE cxx_std_20)
+        target_include_directories(xdpaeron_bench
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
+                ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        target_link_libraries(xdpaeron_bench
+            PRIVATE
+                benchmark::benchmark
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: benchmarks enabled (target: xdpaeron_bench)")
+    else()
+        message(STATUS "xdpaeron: benchmarks disabled (install libbenchmark-dev to enable)")
+    endif()
 endif()
