@@ -57,8 +57,6 @@ if(UNIX AND NOT APPLE)
     target_compile_features(xdpaeron_tests PRIVATE cxx_std_20)
     target_include_directories(xdpaeron_tests
         PRIVATE
-            # Stub xdp/xsk.h must come first so it shadows the real libxdp header.
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
             # Repo root so that xdpudp.h and aeron.h are found.
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
@@ -73,7 +71,6 @@ if(UNIX AND NOT APPLE)
         target_compile_features(xdpaeron_bench PRIVATE cxx_std_20)
         target_include_directories(xdpaeron_bench
             PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
                 ${CMAKE_CURRENT_SOURCE_DIR}
         )
         target_link_libraries(xdpaeron_bench
