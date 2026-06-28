@@ -63,7 +63,6 @@
 #include <linux/if_link.h>   // XDP_FLAGS_*
 #include <xdp/xsk.h>         // libxdp; if you only have libbpf use <bpf/xsk.h>
 
-namespace mde::feed {
 namespace detail {
 
 // ── Stop flag driven by SIGINT/SIGTERM (mirrors udp.h's signal handling) ──────
@@ -398,5 +397,3 @@ private:
     uint16_t    remotePort_;
     uint16_t    localPort_;
 };
-
-} // namespace mde::feed

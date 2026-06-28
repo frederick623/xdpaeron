@@ -41,8 +41,8 @@ int main(int argc, char** argv) {
         const int32_t streamId = parseStreamId(argv[4]);
         const std::string iface = (argc == 6) ? argv[5] : "";
 
-        mde::feed::UdpSource xdpSource(listenAddr, listenPort, iface);
-        mde::feed::AeronIpcPublisher publisher(channel, streamId);
+        UdpSource xdpSource(listenAddr, listenPort, iface);
+        AeronIpcPublisher publisher(channel, streamId);
 
         std::cout << "[xdp-relayer] " << listenAddr << ":" << listenPort
                   << " -> " << channel << " stream " << streamId

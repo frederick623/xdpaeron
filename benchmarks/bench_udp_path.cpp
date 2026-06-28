@@ -42,8 +42,8 @@
 
 #include "xdpudp.h"
 
-using mde::feed::detail::UdpView;
-using mde::feed::detail::parseUdp;
+using detail::UdpView;
+using detail::parseUdp;
 
 // ── Frame builder (identical to the one in tests/test_parse.cpp) ─────────────
 

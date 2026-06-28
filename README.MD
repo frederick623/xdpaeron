@@ -35,7 +35,7 @@ The main entry point (`relayer.cpp`) wires these two components together as a st
 | `aeron.h` | `AeronIpcPublisher` and `AeronIpcSource` — thin wrappers around the Aeron C++ client. Falls back to no-op stubs when the Aeron library is not present. |
 | `LICENSE` | Project license. |
 
-The code lives in the `mde::feed` namespace and is part of a larger market-data / trading-engine ecosystem.
+The code uses the global namespace and is part of a larger market-data / trading-engine ecosystem.
 
 ---
 
@@ -113,7 +113,7 @@ Press `Ctrl-C` or send `SIGTERM` to stop gracefully.
 
 ## Class Reference
 
-### `mde::feed::UdpSource` (`xdpudp.h`)
+### `UdpSource` (`xdpudp.h`)
 
 Binds AF_XDP to a NIC queue and delivers UDP payloads matching a destination IP/port filter.
 
@@ -124,7 +124,7 @@ src.run([](const uint8_t* data, uint16_t len) {
 });
 ```
 
-### `mde::feed::UdpConnector` (`xdpudp.h`)
+### `UdpConnector` (`xdpudp.h`)
 
 Like `UdpSource` but filters by *source* IP/port (emulates a "connected" UDP socket).
 
@@ -133,7 +133,7 @@ UdpConnector conn("192.168.1.10", 9000, /*localPort=*/0);
 conn.run([](const uint8_t* data, uint16_t len) { ... });
 ```
 
-### `mde::feed::AeronIpcPublisher` (`aeron.h`)
+### `AeronIpcPublisher` (`aeron.h`)
 
 Connects to an Aeron media driver and publishes byte buffers on a channel/stream.
 
@@ -142,7 +142,7 @@ AeronIpcPublisher pub("aeron:ipc", 1001);
 pub.publish(data, len);   // returns false on backpressure
 ```
 
-### `mde::feed::AeronIpcSource` (`aeron.h`)
+### `AeronIpcSource` (`aeron.h`)
 
 Subscribes to an Aeron channel/stream and delivers messages via callback.
 

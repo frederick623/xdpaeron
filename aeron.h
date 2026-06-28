@@ -23,7 +23,6 @@
 #  endif
 #endif
 
-namespace mde::feed {
 namespace detail {
 
 inline std::atomic<bool>& aeronStop() {
@@ -163,5 +162,3 @@ public:
 };
 
 #endif
-
-} // namespace mde::feed

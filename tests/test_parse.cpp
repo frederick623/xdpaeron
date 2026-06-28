@@ -1,4 +1,4 @@
-// Unit tests for mde::feed::detail parsing helpers in xdpudp.h.
+// Unit tests for detail parsing helpers in xdpudp.h.
 //
 // Covers:
 //   parseUdp   — Ethernet/IPv4/UDP frame parser
@@ -19,10 +19,10 @@
 
 #include "xdpudp.h"
 
-using mde::feed::detail::UdpView;
-using mde::feed::detail::parseUdp;
-using mde::feed::detail::pickNic;
-using mde::feed::detail::resolveIpv4;
+using detail::UdpView;
+using detail::parseUdp;
+using detail::pickNic;
+using detail::resolveIpv4;
 
 // ── Minimal test runner ───────────────────────────────────────────────────────
 static int g_pass = 0;
@@ -302,23 +302,23 @@ static void test_parseUdp_payloadPointerValidity() {
 // ── pickNic tests ─────────────────────────────────────────────────────────────
 
 static void test_pickNic_explicit() {
-    CHECK(mde::feed::detail::pickNic("enp3s0") == "enp3s0");
+    CHECK(detail::pickNic("enp3s0") == "enp3s0");
 }
 
 static void test_pickNic_envVar() {
     ::setenv("MDE_XDP_IFACE", "bond0", 1);
-    CHECK(mde::feed::detail::pickNic("") == "bond0");
+    CHECK(detail::pickNic("") == "bond0");
     ::unsetenv("MDE_XDP_IFACE");
 }
 
 static void test_pickNic_default() {
     ::unsetenv("MDE_XDP_IFACE");
-    CHECK(mde::feed::detail::pickNic("") == "eth0");
+    CHECK(detail::pickNic("") == "eth0");
 }
 
 static void test_pickNic_explicitOverridesEnv() {
     ::setenv("MDE_XDP_IFACE", "bond0", 1);
-    CHECK(mde::feed::detail::pickNic("eth1") == "eth1");
+    CHECK(detail::pickNic("eth1") == "eth1");
     ::unsetenv("MDE_XDP_IFACE");
 }
 
