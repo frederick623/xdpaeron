@@ -97,7 +97,7 @@ sudo ./build/xdp_udp_relayer 239.1.2.3 50000 aeron:ipc 1001 eth0
 | `listen_port` | UDP destination port to filter on. |
 | `aeron_channel` | Aeron channel URI (e.g. `aeron:ipc`, `aeron:udp?endpoint=localhost:20121`). |
 | `aeron_stream_id` | Aeron stream ID (positive 32-bit integer). |
-| `xdp_iface` | (Optional) NIC interface name. Defaults to `$MDE_XDP_IFACE`, then `eth0`. |
+| `xdp_iface` | (Optional) NIC interface name. Defaults to `eth0`. |
 
 > **Privileges required:** `CAP_NET_RAW`, `CAP_BPF`, `CAP_SYS_ADMIN` (or simply run with `sudo`).
 
