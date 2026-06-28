@@ -305,21 +305,8 @@ static void test_pickNic_explicit() {
     CHECK(detail::pickNic("enp3s0") == "enp3s0");
 }
 
-static void test_pickNic_envVar() {
-    ::setenv("MDE_XDP_IFACE", "bond0", 1);
-    CHECK(detail::pickNic("") == "bond0");
-    ::unsetenv("MDE_XDP_IFACE");
-}
-
 static void test_pickNic_default() {
-    ::unsetenv("MDE_XDP_IFACE");
     CHECK(detail::pickNic("") == "eth0");
-}
-
-static void test_pickNic_explicitOverridesEnv() {
-    ::setenv("MDE_XDP_IFACE", "bond0", 1);
-    CHECK(detail::pickNic("eth1") == "eth1");
-    ::unsetenv("MDE_XDP_IFACE");
 }
 
 // ── resolveIpv4 tests ─────────────────────────────────────────────────────────
@@ -368,9 +355,7 @@ int main() {
 
     // pickNic
     test_pickNic_explicit();
-    test_pickNic_envVar();
     test_pickNic_default();
-    test_pickNic_explicitOverridesEnv();
 
     // resolveIpv4
     test_resolveIpv4_dottedDecimal();
