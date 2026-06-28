@@ -161,3 +161,26 @@ Both `UdpSource`/`UdpConnector` and `AeronIpcSource` deliver payloads directly v
 - This approach minimizes latency by eliminating intermediate queue buffering.
 
 High-performance applications can offload heavy consumer logic to a separate thread if needed.
+
+---
+
+## Benchmark
+
+```
+root@30874c415336:/ebpf/xdpaeron# ./xdpaeron_bench 
+2026-06-28T11:20:37+00:00
+Running ./xdpaeron_bench
+Run on (2 X 48 MHz CPU s)
+Load Average: 0.00, 0.02, 0.00
+***WARNING*** Library was built as DEBUG. Timings may be affected.
+------------------------------------------------------------------------------------
+Benchmark                          Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------
+BM_XdpParseAndFilter/64         1.20 ns         1.20 ns    525166575 bytes_per_second=82.3026Gi/s xdp-parse+filter
+BM_XdpParseAndFilter/512        1.22 ns         1.22 ns    575616281 bytes_per_second=424.536Gi/s xdp-parse+filter
+BM_XdpParseAndFilter/1400       1.21 ns         1.21 ns    579316939 bytes_per_second=1.0844Ti/s xdp-parse+filter
+BM_UdpKernelRecv/64              819 ns          477 ns      1456544 bytes_per_second=127.848Mi/s kernel-udp-recv
+BM_UdpKernelRecv/512            1068 ns          548 ns      1283269 bytes_per_second=891.097Mi/s kernel-udp-recv
+BM_UdpKernelRecv/1400           1296 ns          624 ns      1113067 bytes_per_second=2.08808Gi/s kernel-udp-recv
+```
+
