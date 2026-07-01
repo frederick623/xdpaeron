@@ -334,6 +334,101 @@ static void test_resolveIpv4_emptyString() {
     CHECK(resolveIpv4("") == 0u);
 }
 
+// ── TX helper tests ───────────────────────────────────────────────────────────
+
+// Build a TX frame and verify that parseUdp round-trips it correctly.
+static void test_buildTxFrame_roundtrip() {
+    const uint8_t srcMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    const uint8_t dstMac[6] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
+    const uint32_t srcIp  = inet_addr("10.0.0.1");
+    const uint32_t dstIp  = inet_addr("10.0.0.2");
+    const uint16_t srcPort = 5000;
+    const uint16_t dstPort = 9000;
+    const std::vector<uint8_t> payload = {'T', 'X', 'P', 'A', 'T', 'H'};
+
+    const auto frame = detail::buildTxFrame(
+        srcMac, dstMac, srcIp, dstIp, srcPort, dstPort,
+        payload.data(), static_cast<uint16_t>(payload.size()));
+
+    UdpView v{};
+    CHECK(parseUdp(frame.data(), static_cast<uint32_t>(frame.size()), v));
+    CHECK(v.srcIp      == srcIp);
+    CHECK(v.dstIp      == dstIp);
+    CHECK(v.srcPort    == srcPort);
+    CHECK(v.dstPort    == dstPort);
+    CHECK(v.payloadLen == static_cast<uint16_t>(payload.size()));
+    CHECK(v.payload    != nullptr);
+    CHECK(std::memcmp(v.payload, payload.data(), payload.size()) == 0);
+}
+
+// Frame with empty payload must be parseable.
+static void test_buildTxFrame_emptyPayload() {
+    const uint8_t srcMac[6] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+    const uint8_t dstMac[6] = {0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C};
+    const uint32_t srcIp   = inet_addr("192.168.0.1");
+    const uint32_t dstIp   = inet_addr("192.168.0.2");
+
+    const auto frame = detail::buildTxFrame(
+        srcMac, dstMac, srcIp, dstIp, 1234, 5678, nullptr, 0);
+
+    UdpView v{};
+    CHECK(parseUdp(frame.data(), static_cast<uint32_t>(frame.size()), v));
+    CHECK(v.payloadLen == 0u);
+}
+
+// buildTxFrame output length must equal 14 (Eth) + 20 (IP) + 8 (UDP) + payload.
+static void test_buildTxFrame_frameSize() {
+    const uint8_t srcMac[6]{};
+    const uint8_t dstMac[6]{};
+    const uint8_t data[42]{};
+
+    const auto frame = detail::buildTxFrame(
+        srcMac, dstMac,
+        inet_addr("1.2.3.4"), inet_addr("5.6.7.8"),
+        1111, 2222, data, 42);
+
+    CHECK(frame.size() == 14u + 20u + 8u + 42u);
+}
+
+// IPv4 checksum in the generated frame must be correct.  Recomputing
+// ipv4Checksum over all 20 header bytes (checksum field included) must
+// return 0x0000, which is the one's-complement verification identity.
+static void test_buildTxFrame_ipChecksum() {
+    const uint8_t srcMac[6]{};
+    const uint8_t dstMac[6]{};
+    const uint8_t payload[4] = {1, 2, 3, 4};
+
+    const auto frame = detail::buildTxFrame(
+        srcMac, dstMac,
+        inet_addr("172.16.0.1"), inet_addr("172.16.0.2"),
+        8080, 8080, payload, 4);
+
+    // IP header starts at byte 14 (after Ethernet).
+    const uint16_t ck = detail::ipv4Checksum(frame.data() + 14, 20u);
+    // Verification: sum of all words (including stored checksum) → 0xFFFF.
+    // ipv4Checksum negates, so the returned value must be 0x0000.
+    CHECK(ck == 0x0000u);
+}
+
+// getMacAddr on the loopback interface must succeed and return the all-zeros
+// loopback MAC (00:00:00:00:00:00).
+static void test_getMacAddr_loopback() {
+    uint8_t mac[6]{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    const bool ok = detail::getMacAddr("lo", mac);
+    CHECK(ok);
+    if (ok) {
+        // Loopback MAC on Linux is always 00:00:00:00:00:00.
+        for (int i = 0; i < 6; ++i)
+            CHECK(mac[i] == 0x00u);
+    }
+}
+
+// getIfaceIpv4 on the loopback interface must return 127.0.0.1.
+static void test_getIfaceIpv4_loopback() {
+    const uint32_t ip = detail::getIfaceIpv4("lo");
+    CHECK(ip == inet_addr("127.0.0.1"));
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -363,6 +458,16 @@ int main() {
     test_resolveIpv4_broadcast();
     test_resolveIpv4_invalidOctet();
     test_resolveIpv4_emptyString();
+
+    // TX helpers: buildTxFrame
+    test_buildTxFrame_roundtrip();
+    test_buildTxFrame_emptyPayload();
+    test_buildTxFrame_frameSize();
+    test_buildTxFrame_ipChecksum();
+
+    // TX helpers: getMacAddr / getIfaceIpv4
+    test_getMacAddr_loopback();
+    test_getIfaceIpv4_loopback();
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
