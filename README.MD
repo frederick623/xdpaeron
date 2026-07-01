@@ -159,6 +159,36 @@ The forwarder looks up the destination MAC address in the kernel ARP table and f
 
 ---
 
+## UDP Multicast Support
+
+The **relayer** (UDP → Aeron) fully supports receiving **UDP multicast packets** via AF_XDP. When you specify a multicast group address in `listen_addr`, the relayer automatically:
+
+1. **Sends an IGMP join** — registers the multicast group with the network stack so the switch/router forwards traffic to the interface.
+2. **Intercepts frames at the NIC** — the XDP program captures incoming Ethernet frames *before* the kernel UDP stack processes them, avoiding kernel overhead.
+3. **Filters by multicast IP and UDP port** — only matching datagrams are forwarded to Aeron.
+
+### Example — receive a multicast feed
+
+```bash
+# Listen on multicast group 239.1.2.3, port 50000, and publish to Aeron IPC stream 1001
+sudo ./build/xdp_udp_relayer 239.1.2.3 50000 aeron:ipc 1001 eth0
+```
+
+### Using multicast in C++
+
+```cpp
+// Bind to multicast group and process each datagram
+UdpSource src("239.1.2.3", 50000, "eth0");
+src.run([](const uint8_t* data, uint16_t len) {
+    // Called for each multicast UDP datagram received
+    std::cout << "Received " << len << " bytes\n";
+});
+```
+
+Multicast groups use addresses in the `224.0.0.0/4` range. See [IANA Multicast Address Allocations](https://www.iana.org/assignments/multicast-addresses/multicast-addresses.xhtml) for standard group assignments.
+
+---
+
 ## Class Reference
 
 ### `UdpSource` (`xdpudp.h`)
