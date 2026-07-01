@@ -39,13 +39,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <atomic>
+#include <array>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <net/ethernet.h>
@@ -55,6 +58,7 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -267,6 +271,139 @@ inline void xdpReceiveLoop(const std::string& iface, uint32_t queueId,
     munmap(area, bufSz);
 }
 
+// ── TX helpers ────────────────────────────────────────────────────────────────
+
+// Return the hardware (MAC) address of a local interface.
+// mac must point to a 6-byte buffer.  Returns true on success.
+inline bool getMacAddr(const std::string& iface, uint8_t mac[6]) {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+    ifreq ifr{};
+    std::strncpy(ifr.ifr_name, iface.c_str(), IFNAMSIZ - 1);
+    const bool ok = (ioctl(fd, SIOCGIFHWADDR, &ifr) == 0);
+    if (ok) std::memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+    ::close(fd);
+    return ok;
+}
+
+// Return the primary IPv4 address of a local interface in network byte order.
+// Returns 0 on failure.
+inline uint32_t getIfaceIpv4(const std::string& iface) {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return 0;
+    ifreq ifr{};
+    std::strncpy(ifr.ifr_name, iface.c_str(), IFNAMSIZ - 1);
+    uint32_t ip = 0;
+    if (ioctl(fd, SIOCGIFADDR, &ifr) == 0)
+        ip = reinterpret_cast<const sockaddr_in*>(&ifr.ifr_addr)->sin_addr.s_addr;
+    ::close(fd);
+    return ip;
+}
+
+// Look up the MAC address for a given network-order IPv4 address in the
+// kernel ARP table (/proc/net/arp).  Only returns entries that are complete
+// (ATF_COM = 0x2).  Returns true and fills mac[6] on success.
+inline bool lookupArpMac(uint32_t netOrderIp, uint8_t mac[6]) {
+    char ipStr[INET_ADDRSTRLEN]{};
+    inet_ntop(AF_INET, &netOrderIp, ipStr, sizeof ipStr);
+
+    FILE* f = std::fopen("/proc/net/arp", "r");
+    if (!f) return false;
+
+    char line[256];
+    std::fgets(line, sizeof line, f);           // skip header line
+    while (std::fgets(line, sizeof line, f)) {
+        char addr[32]{}, hwAddr[32]{};
+        int  hwType = 0, flags = 0;
+        if (std::sscanf(line, "%31s %x %x %31s", addr, &hwType, &flags, hwAddr) != 4)
+            continue;
+        if (std::strcmp(addr, ipStr) != 0 || !(flags & 0x2)) // ATF_COM
+            continue;
+        unsigned m[6]{};
+        if (std::sscanf(hwAddr, "%02x:%02x:%02x:%02x:%02x:%02x",
+                        &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+            for (int i = 0; i < 6; ++i) mac[i] = static_cast<uint8_t>(m[i]);
+            std::fclose(f);
+            return true;
+        }
+    }
+    std::fclose(f);
+    return false;
+}
+
+// Compute the one's-complement checksum over hdrLen bytes (must be even).
+// Reads bytes in big-endian (network) order — endian-neutral implementation.
+// The checksum field in the header should be zeroed before calling.
+// Returns the checksum in host byte order; store with the high byte first
+// (network order) by writing cksum>>8 then cksum&0xFF.
+// Verification: recompute with the stored checksum included — returns 0x0000
+// when the header is valid.
+inline uint16_t ipv4Checksum(const void* header, std::size_t hdrLen) {
+    const auto* b = static_cast<const uint8_t*>(header);
+    uint32_t sum = 0;
+    for (std::size_t i = 0; i + 1 < hdrLen; i += 2)
+        sum += (uint32_t(b[i]) << 8) | b[i + 1];
+    while (sum >> 16)
+        sum = (sum & 0xFFFFu) + (sum >> 16);
+    return static_cast<uint16_t>(~sum);
+}
+
+// Build a complete L2 (Ethernet/IPv4/UDP) TX frame from a raw payload.
+// srcIp / dstIp are in network byte order.
+// srcPort / dstPort are in host byte order.
+// Returns the assembled frame as a byte vector.
+inline std::vector<uint8_t> buildTxFrame(
+    const uint8_t srcMac[6], const uint8_t dstMac[6],
+    uint32_t srcIp, uint32_t dstIp,
+    uint16_t srcPort, uint16_t dstPort,
+    const uint8_t* payload, uint16_t payloadLen)
+{
+    const uint16_t udpLen   = static_cast<uint16_t>(8u + payloadLen);
+    const uint16_t ipTotal  = static_cast<uint16_t>(20u + udpLen);
+
+    std::vector<uint8_t> f;
+    f.reserve(14u + 20u + 8u + payloadLen);
+
+    // Ethernet header (14 bytes)
+    f.insert(f.end(), dstMac, dstMac + 6);
+    f.insert(f.end(), srcMac, srcMac + 6);
+    f.push_back(0x08); f.push_back(0x00);  // EtherType = IPv4
+
+    // IPv4 header (20 bytes, no options)
+    const std::size_t ipOff = f.size();
+    f.push_back(0x45u);                                    // version=4, IHL=5
+    f.push_back(0x00u);                                    // DSCP/ECN
+    f.push_back(static_cast<uint8_t>(ipTotal >> 8));
+    f.push_back(static_cast<uint8_t>(ipTotal & 0xFFu));
+    f.push_back(0x00u); f.push_back(0x01u);               // identification
+    f.push_back(0x40u); f.push_back(0x00u);               // flags=DF, frag=0
+    f.push_back(64u);                                      // TTL
+    f.push_back(0x11u);                                    // protocol = UDP
+    f.push_back(0x00u); f.push_back(0x00u);               // checksum (filled below)
+    const auto* srcBytes = reinterpret_cast<const uint8_t*>(&srcIp);
+    const auto* dstBytes = reinterpret_cast<const uint8_t*>(&dstIp);
+    f.insert(f.end(), srcBytes, srcBytes + 4);
+    f.insert(f.end(), dstBytes, dstBytes + 4);
+
+    // Fill in IPv4 checksum over the 20-byte header (stored in network byte order).
+    const uint16_t cksum = ipv4Checksum(f.data() + ipOff, 20u);
+    f[ipOff + 10] = static_cast<uint8_t>(cksum >> 8);
+    f[ipOff + 11] = static_cast<uint8_t>(cksum & 0xFFu);
+
+    // UDP header (8 bytes); leave checksum as 0 (optional in IPv4)
+    f.push_back(static_cast<uint8_t>(srcPort >> 8));
+    f.push_back(static_cast<uint8_t>(srcPort & 0xFFu));
+    f.push_back(static_cast<uint8_t>(dstPort >> 8));
+    f.push_back(static_cast<uint8_t>(dstPort & 0xFFu));
+    f.push_back(static_cast<uint8_t>(udpLen >> 8));
+    f.push_back(static_cast<uint8_t>(udpLen & 0xFFu));
+    f.push_back(0x00u); f.push_back(0x00u);               // checksum disabled
+
+    // Payload
+    f.insert(f.end(), payload, payload + payloadLen);
+    return f;
+}
+
 } // namespace detail
 
 // ── UdpSource ─────────────────────────────────────────────────────────────────
@@ -391,4 +528,207 @@ private:
     uint16_t    remotePort_;
     uint16_t    localPort_;
     std::string nic_;
+};
+
+// ── UdpSink ───────────────────────────────────────────────────────────────────
+//  Reverse path: accept a UDP payload and transmit it as a raw UDP datagram
+//  via the AF_XDP TX ring (kernel-bypass egress).
+//
+//  Constructor resolves remote IP, reads the local interface MAC/IP, looks up
+//  the ARP table for the destination MAC (falls back to a broadcast MAC with a
+//  warning if not found), sets up UMEM + XSK TX ring, and is then ready for
+//  repeated send() calls from any thread.
+//
+//  Usage:
+//      UdpSink sink("192.168.1.10", 9000, /*srcPort=*/9001, "eth0");
+//      sink.send(data, len);   // called e.g. from AeronIpcSource callback
+class UdpSink {
+public:
+    // remoteHost  — destination IP (dotted-decimal or hostname)
+    // remotePort  — destination UDP port (host byte order)
+    // srcPort     — source UDP port (0 = use remotePort as source too)
+    // nic         — NIC interface name; defaults to "eth0"
+    UdpSink(std::string remoteHost, uint16_t remotePort,
+            uint16_t srcPort = 0, std::string nic = "")
+        : remoteHost_(std::move(remoteHost)), remotePort_(remotePort),
+          srcPort_(srcPort != 0 ? srcPort : remotePort),
+          nic_(detail::pickNic(nic)) {
+        setup();
+    }
+
+    ~UdpSink() { teardown(); }
+
+    // Not copyable/movable (manages OS resources).
+    UdpSink(const UdpSink&)            = delete;
+    UdpSink& operator=(const UdpSink&) = delete;
+
+    // Transmit one UDP datagram via the AF_XDP TX ring.
+    // Returns true if the frame was queued; false on error (no free buffers,
+    // socket not set up, etc.).
+    bool send(const uint8_t* data, uint16_t len) {
+        if (!xsk_ || len > maxPayload_) return false;
+
+        // Drain the completion ring to recover buffers sent by the kernel.
+        drainComp();
+
+        if (freeFrames_.empty()) {
+            std::cerr << "[xdp-sink] TX ring full; dropping frame\n";
+            return false;
+        }
+
+        // Build the full L2 frame.
+        const std::vector<uint8_t> frame =
+            detail::buildTxFrame(srcMac_, dstMac_, srcIp_, dstIp_,
+                                 srcPort_, remotePort_, data, len);
+
+        const uint64_t addr = freeFrames_.back();
+        freeFrames_.pop_back();
+
+        // Copy frame into UMEM.
+        std::memcpy(static_cast<uint8_t*>(area_) + addr,
+                    frame.data(), frame.size());
+
+        // Post to TX ring.
+        uint32_t idx = 0;
+        if (xsk_ring_prod__reserve(&tx_, 1, &idx) == 0) {
+            freeFrames_.push_back(addr);  // return buffer
+            std::cerr << "[xdp-sink] TX ring reserve failed\n";
+            return false;
+        }
+        xdp_desc* desc = xsk_ring_prod__tx_desc(&tx_, idx);
+        desc->addr = addr;
+        desc->len  = static_cast<uint32_t>(frame.size());
+        xsk_ring_prod__submit(&tx_, 1);
+
+        // Kick the kernel if required (XDP_USE_NEED_WAKEUP).
+        if (xsk_ring_prod__needs_wakeup(&tx_)) {
+            const int fd = xsk_socket__fd(xsk_);
+            sendto(fd, nullptr, 0, MSG_DONTWAIT, nullptr, 0);
+        }
+        return true;
+    }
+
+private:
+    // ── AF_XDP TX setup ──────────────────────────────────────────────────────
+    static constexpr uint32_t FRAME_SIZE = XSK_UMEM__DEFAULT_FRAME_SIZE;
+    static constexpr uint32_t NUM_FRAMES = 4096;
+    // Maximum UDP payload that fits in one AF_XDP frame.
+    static constexpr uint16_t maxPayload_ =
+        static_cast<uint16_t>(FRAME_SIZE - 14u - 20u - 8u);
+
+    void setup() {
+        // Resolve destination IP.
+        dstIp_ = detail::resolveIpv4(remoteHost_);
+        if (dstIp_ == 0) {
+            std::cerr << "[xdp-sink] cannot resolve \"" << remoteHost_ << "\"\n";
+            return;
+        }
+
+        // Local interface MAC and IP.
+        if (!detail::getMacAddr(nic_, srcMac_)) {
+            std::cerr << "[xdp-sink] cannot get MAC of \"" << nic_ << "\"\n";
+            return;
+        }
+        srcIp_ = detail::getIfaceIpv4(nic_);
+        if (srcIp_ == 0) {
+            std::cerr << "[xdp-sink] cannot get IP of \"" << nic_ << "\"\n";
+            return;
+        }
+
+        // Destination MAC via ARP table; fall back to broadcast.
+        if (!detail::lookupArpMac(dstIp_, dstMac_)) {
+            char ipStr[INET_ADDRSTRLEN]{};
+            inet_ntop(AF_INET, &dstIp_, ipStr, sizeof ipStr);
+            std::cerr << "[xdp-sink] ARP miss for " << ipStr
+                      << " — using broadcast MAC\n";
+            std::memset(dstMac_, 0xFF, 6);
+        }
+
+        // Lift locked-memory limit (UMEM is pinned).
+        rlimit rl{RLIM_INFINITY, RLIM_INFINITY};
+        setrlimit(RLIMIT_MEMLOCK, &rl);
+
+        const std::size_t bufSz = std::size_t(NUM_FRAMES) * FRAME_SIZE;
+        area_ = mmap(nullptr, bufSz, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (area_ == MAP_FAILED) { perror("[xdp-sink] mmap"); area_ = nullptr; return; }
+        bufSz_ = bufSz;
+
+        xsk_umem_config ucfg{};
+        ucfg.fill_size      = XSK_RING_PROD__DEFAULT_NUM_DESCS;
+        ucfg.comp_size      = XSK_RING_CONS__DEFAULT_NUM_DESCS;
+        ucfg.frame_size     = FRAME_SIZE;
+        ucfg.frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM;
+        if (int err = xsk_umem__create(&umem_, area_, bufSz,
+                                       &fill_, &comp_, &ucfg)) {
+            std::cerr << "[xdp-sink] xsk_umem__create: "
+                      << std::strerror(-err) << "\n";
+            return;
+        }
+
+        xsk_socket_config scfg{};
+        scfg.rx_size      = 0;   // TX-only socket: no RX ring
+        scfg.tx_size      = XSK_RING_PROD__DEFAULT_NUM_DESCS;
+        scfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD; // no XDP prog needed for TX
+        scfg.xdp_flags    = XDP_FLAGS_UPDATE_IF_NOEXIST;
+        scfg.bind_flags   = XDP_USE_NEED_WAKEUP;
+        if (int err = xsk_socket__create(&xsk_, nic_.c_str(), /*queueId=*/0,
+                                         umem_, nullptr, &tx_, &scfg)) {
+            std::cerr << "[xdp-sink] xsk_socket__create on " << nic_
+                      << ": " << std::strerror(-err) << "\n";
+            return;
+        }
+
+        // Populate the free-frame list (all frames are available for TX).
+        freeFrames_.reserve(NUM_FRAMES);
+        for (uint32_t i = 0; i < NUM_FRAMES; ++i)
+            freeFrames_.push_back(uint64_t(i) * FRAME_SIZE);
+
+        char srcIpStr[INET_ADDRSTRLEN]{}, dstIpStr[INET_ADDRSTRLEN]{};
+        inet_ntop(AF_INET, &srcIp_, srcIpStr, sizeof srcIpStr);
+        inet_ntop(AF_INET, &dstIp_, dstIpStr, sizeof dstIpStr);
+        std::cout << "[xdp-sink] " << srcIpStr << ":" << srcPort_
+                  << " -> " << dstIpStr << ":" << remotePort_
+                  << " via " << nic_ << "\n";
+    }
+
+    void teardown() {
+        if (xsk_)  { xsk_socket__delete(xsk_);  xsk_  = nullptr; }
+        if (umem_) { xsk_umem__delete(umem_);   umem_ = nullptr; }
+        if (area_ && bufSz_) {
+            munmap(area_, bufSz_);
+            area_ = nullptr; bufSz_ = 0;
+        }
+    }
+
+    // Return completed TX buffers to the free list.
+    void drainComp() {
+        constexpr uint32_t BATCH = 64;
+        uint32_t idx = 0;
+        const uint32_t done = xsk_ring_cons__peek(&comp_, BATCH, &idx);
+        for (uint32_t i = 0; i < done; ++i)
+            freeFrames_.push_back(*xsk_ring_cons__comp_addr(&comp_, idx + i));
+        if (done) xsk_ring_cons__release(&comp_, done);
+    }
+
+    // ── Member data ──────────────────────────────────────────────────────────
+    std::string  remoteHost_;
+    uint16_t     remotePort_;
+    uint16_t     srcPort_;
+    std::string  nic_;
+
+    void*        area_  = nullptr;
+    std::size_t  bufSz_ = 0;
+    xsk_umem*    umem_  = nullptr;
+    xsk_socket*  xsk_   = nullptr;
+    xsk_ring_prod fill_{};
+    xsk_ring_cons comp_{};
+    xsk_ring_prod tx_{};
+
+    uint32_t     srcIp_    = 0;
+    uint32_t     dstIp_    = 0;
+    uint8_t      srcMac_[6]{};
+    uint8_t      dstMac_[6]{};
+
+    std::vector<uint64_t> freeFrames_;
 };

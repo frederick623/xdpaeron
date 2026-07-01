@@ -47,8 +47,20 @@ if(UNIX AND NOT APPLE)
                 Threads::Threads
         )
         message(STATUS "xdpaeron: xdp_udp_relayer enabled")
+
+        add_executable(aeron_xdp_forwarder forwarder.cpp)
+        target_include_directories(aeron_xdp_forwarder PRIVATE ${XDP_INCLUDE_DIR})
+        target_link_libraries(aeron_xdp_forwarder
+            PRIVATE
+                xdpaeron::ipc
+                ${XDP_LIBRARY}
+                ${BPF_LIBRARY}
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: aeron_xdp_forwarder enabled")
     else()
         message(STATUS "xdpaeron: xdp_udp_relayer disabled (needs Linux, libxdp, libbpf, Aeron)")
+        message(STATUS "xdpaeron: aeron_xdp_forwarder disabled (needs Linux, libxdp, libbpf, Aeron)")
     endif()
 
     # ── Unit tests (no libxdp required: stub headers are used) ────────────────

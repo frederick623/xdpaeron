@@ -1,10 +1,17 @@
 # xdpaeron
 
-A high-performance UDP-to-Aeron relayer built on **AF_XDP** (Linux kernel-bypass networking). It receives raw UDP datagrams directly from a NIC queue — bypassing the kernel TCP/IP stack entirely — and publishes them as messages on an [Aeron](https://github.com/real-logic/aeron) IPC channel with minimal latency.
+A high-performance UDP↔Aeron bridge built on **AF_XDP** (Linux kernel-bypass networking). It can operate in two directions:
+
+- **RX path** — receives raw UDP datagrams directly from a NIC queue via AF_XDP and publishes them on an [Aeron](https://github.com/real-logic/aeron) IPC channel.
+- **TX path** — subscribes to an Aeron channel and transmits each message as a raw UDP datagram via the AF_XDP TX ring (the reverse path).
+
+Both paths bypass the kernel TCP/IP stack entirely, achieving near-wire-rate latency.
 
 ---
 
 ## Overview
+
+### RX path (UDP → Aeron)
 
 ```
 NIC (hardware queue)
@@ -21,7 +28,32 @@ NIC (hardware queue)
   Aeron subscribers (any process)
 ```
 
-The main entry point (`relayer.cpp`) wires these two components together as a standalone `xdp_udp_relayer` executable. Both components are also available as reusable C++ classes for use in larger applications.
+### TX path (Aeron → UDP) — reverse direction
+
+```
+  Aeron publishers (any process)
+       │
+       ▼
+  AeronIpcSource                    ← aeron.h
+  (Aeron channel + stream ID)
+       │  message bytes
+       ▼
+  UdpSink                           ← xdpudp.h
+  (build raw Ethernet/IPv4/UDP frame,
+   transmit via AF_XDP TX ring)
+       │  AF_XDP TX (zero-copy / copy mode)
+       ▼
+  NIC (hardware queue) → network
+```
+
+The main entry points wire these components together as standalone executables:
+
+| Executable | Path |
+|------------|------|
+| `xdp_udp_relayer` (`relayer.cpp`) | UDP → Aeron |
+| `aeron_xdp_forwarder` (`forwarder.cpp`) | Aeron → UDP |
+
+Both components are also available as reusable C++ classes for use in larger applications.
 
 ---
 
@@ -30,8 +62,9 @@ The main entry point (`relayer.cpp`) wires these two components together as a st
 | File | Purpose |
 |------|---------|
 | `CMakeLists.txt` | CMake build configuration (C++20). Detects optional dependencies (Aeron, libxdp, libbpf) and enables features accordingly. |
-| `relayer.cpp` | `main()` for the `xdp_udp_relayer` executable. Parses CLI arguments and wires `UdpSource` → `AeronIpcPublisher`. |
-| `xdpudp.h` | `UdpSource` and `UdpConnector` — AF_XDP receive loop, frame parsing (Ethernet/VLAN/IPv4/UDP), and IP/port filtering. Linux-only. |
+| `relayer.cpp` | `main()` for the `xdp_udp_relayer` executable. Wires `UdpSource` → `AeronIpcPublisher` (RX path). |
+| `forwarder.cpp` | `main()` for the `aeron_xdp_forwarder` executable. Wires `AeronIpcSource` → `UdpSink` (TX path). |
+| `xdpudp.h` | `UdpSource`, `UdpConnector`, and `UdpSink` — AF_XDP RX/TX loops, frame parsing and building (Ethernet/VLAN/IPv4/UDP), IP/port filtering. Linux-only. |
 | `aeron.h` | `AeronIpcPublisher` and `AeronIpcSource` — thin wrappers around the Aeron C++ client. Falls back to no-op stubs when the Aeron library is not present. |
 | `LICENSE` | Project license. |
 
@@ -79,7 +112,7 @@ If dependencies are missing, CMake will print status messages indicating which f
 
 ---
 
-## Running the Relayer
+## Running the Relayer (UDP → Aeron)
 
 ```
 Usage: xdp_udp_relayer <listen_addr> <listen_port> <aeron_channel> <aeron_stream_id> [xdp_iface]
@@ -99,15 +132,30 @@ sudo ./build/xdp_udp_relayer 239.1.2.3 50000 aeron:ipc 1001 eth0
 | `aeron_stream_id` | Aeron stream ID (positive 32-bit integer). |
 | `xdp_iface` | (Optional) NIC interface name. Defaults to `eth0`. |
 
-> **Privileges required:** `CAP_NET_RAW`, `CAP_BPF`, `CAP_SYS_ADMIN` (or simply run with `sudo`).
+---
 
-**Recommended — pin the NIC to a single RX queue** so all traffic lands on queue 0:
+## Running the Forwarder (Aeron → UDP)
 
-```bash
-sudo ethtool -L eth0 combined 1
+```
+Usage: aeron_xdp_forwarder <aeron_channel> <aeron_stream_id> <dest_addr> <dest_port> [src_port] [xdp_iface]
 ```
 
-Press `Ctrl-C` or send `SIGTERM` to stop gracefully.
+**Example — consume from Aeron IPC and send UDP to a remote host:**
+
+```bash
+sudo ./build/aeron_xdp_forwarder aeron:ipc 1001 192.168.1.10 9000 9001 eth0
+```
+
+| Argument | Description |
+|----------|-------------|
+| `aeron_channel` | Aeron channel URI to subscribe to. |
+| `aeron_stream_id` | Aeron stream ID (positive 32-bit integer). |
+| `dest_addr` | Destination IP address (dotted-decimal). |
+| `dest_port` | Destination UDP port (host byte order). |
+| `src_port` | (Optional) Source UDP port. Defaults to `dest_port`. |
+| `xdp_iface` | (Optional) NIC interface name. Defaults to `eth0`. |
+
+The forwarder looks up the destination MAC address in the kernel ARP table and falls back to a broadcast MAC if no ARP entry is found.
 
 ---
 
@@ -150,6 +198,29 @@ Subscribes to an Aeron channel/stream and delivers messages via callback.
 AeronIpcSource src("aeron:ipc", 1001);
 src.run([](const uint8_t* data, uint16_t len) { ... });
 ```
+
+### `UdpSink` (`xdpudp.h`)
+
+Transmits UDP datagrams via the AF_XDP TX ring (kernel-bypass egress). Resolves the destination IP, reads the local interface MAC/IP via `ioctl`, looks up the destination MAC in the kernel ARP table (falls back to broadcast on ARP miss), and builds complete Ethernet/IPv4/UDP frames. Typically used as the target of an `AeronIpcSource` callback.
+
+```cpp
+UdpSink sink("192.168.1.10", /*dstPort=*/9000, /*srcPort=*/9001, "eth0");
+
+AeronIpcSource src("aeron:ipc", 1001);
+src.run([&](const uint8_t* data, uint16_t len) {
+    sink.send(data, len);   // returns false if TX ring is full
+});
+```
+
+> **Privileges required for both executables:** `CAP_NET_RAW`, `CAP_BPF`, `CAP_SYS_ADMIN` (or simply run with `sudo`).
+
+**Recommended — pin the NIC to a single queue** so all traffic lands on queue 0:
+
+```bash
+sudo ethtool -L eth0 combined 1
+```
+
+Press `Ctrl-C` or send `SIGTERM` to stop gracefully.
 
 ---
 
