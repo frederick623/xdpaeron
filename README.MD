@@ -81,6 +81,178 @@ AF_XDP is a Linux socket type that maps NIC RX queue descriptors directly into u
 - The XDP program itself is libxdp's built-in default — no custom BPF object file needs to be shipped.
 - Multicast groups are joined via a normal `SOCK_DGRAM` socket (for IGMP), while AF_XDP intercepts the actual frames before the kernel UDP stack processes them.
 
+---
+
+### XDP Socket Read/Write and Data Flow vs. Traditional UNIX Sockets
+
+#### Traditional UNIX Socket (UDP via `SOCK_DGRAM`)
+
+**Data Flow (RX Path):**
+
+```
+Physical NIC
+    ↓ (DMA: hardware writes frame to kernel ring buffer)
+Kernel RX ring (in kernel memory)
+    ↓ (kernel driver processes Ethernet/IP/UDP headers)
+Kernel network stack (netfilter, iptables, route lookup, etc.)
+    ↓ (socket lookup; packet queued in socket buffer)
+Socket RX buffer (sk_buff queue, kernel memory, typically bounded at ~100 MB)
+    ↓ (userspace calls recvfrom() → syscall entry, context switch)
+User-space buffer (application reads data)
+```
+
+**Data Flow (TX Path):**
+
+```
+User-space buffer (application data)
+    ↓ (userspace calls sendto() → syscall entry, context switch)
+Socket TX buffer (sk_buff in kernel memory)
+    ↓ (kernel builds Ethernet/IP/UDP headers, route lookup, ARP resolution)
+Kernel network stack (netfilter, iptables, QoS, etc.)
+    ↓ (kernel TX ring, hardware queue)
+Physical NIC
+    ↓ (DMA: hardware reads frame from kernel ring buffer, transmits)
+Network (wire)
+```
+
+**Characteristics:**
+
+- **Syscalls per packet:** At least 2 (one RX `recvfrom()`, one TX `sendto()`), plus additional syscalls for setup, configuration, and ARP lookups.
+- **Context switches:** One per packet in each direction, consuming CPU time and L3 cache invalidation.
+- **Memory copies:** 1–2 copies per packet in typical operation (frame data copied from kernel to userspace; TX frame re-serialized by kernel).
+- **Latency:** Typical minimum 1–10 microseconds per packet (depends on CPU load, scheduling, contention).
+- **Throughput (benchmark):** ~890 Mbps @ 512-byte packets (shown in benchmark above: `BM_UdpKernelRecv/512 1068 ns`).
+- **Buffering:** Kernel-managed; bounded by `/proc/sys/net/core/rmem_max` and `/proc/sys/net/core/wmem_max`.
+
+#### AF_XDP Socket (Kernel-Bypass UDP)
+
+**Data Flow (RX Path):**
+
+```
+Physical NIC
+    ↓ (DMA: hardware writes frame directly to user-space UMEM ring)
+User-space UMEM ring (zero-copy mode, or kernel copies for SKB mode)
+    ↓ (user-space XDP poll loop reads frame addresses from RX descriptor ring)
+User-space buffer (frame data is directly accessible, no copy)
+    ↓ (application parses Ethernet/IP/UDP headers, filters, extracts payload)
+Application buffer (UDP payload bytes delivered to callback)
+```
+
+**Data Flow (TX Path):**
+
+```
+Application buffer (message bytes)
+    ↓ (application writes frame to UMEM; builds Ethernet/IP/UDP headers)
+User-space UMEM ring (frame data, zero-copy)
+    ↓ (user-space code writes frame address to TX descriptor ring)
+Hardware TX ring (kernel-managed, but no syscall needed)
+    ↓ (DMA: hardware reads frame from UMEM ring, transmits)
+Physical NIC → Network (wire)
+```
+
+**Characteristics:**
+
+- **Syscalls per packet:** 0–1 (batched polling loop; no syscall per packet).
+- **Context switches:** Effectively none (single poll thread, no context switching during steady-state packet flow).
+- **Memory copies:** 0 (zero-copy mode) or 1 (SKB/copy mode, automatic fallback if NIC driver does not support zero-copy).
+- **Latency:** Typically <500 nanoseconds per packet in zero-copy mode (shown in benchmark: `BM_XdpParseAndFilter/512 1.22 ns`).
+- **Throughput (benchmark):** ~420 Gbps @ 512-byte packets (shown in benchmark above: `BM_XdpParseAndFilter/512`).
+- **Buffering:** Application-managed via pre-allocated UMEM chunks (no kernel buffer bloat).
+
+#### Key Differences Summary
+
+| Aspect | Traditional UDP (`SOCK_DGRAM`) | AF_XDP |
+|--------|--------------------------------|--------|
+| **Syscalls / packet** | 2+ (recvfrom, sendto, + setup) | 0–1 (batched poll) |
+| **Context switches** | 1+ per packet | None (single poll thread) |
+| **Memory copies** | 1–2 per packet | 0 (zero-copy) or 1 (SKB mode) |
+| **Latency (typical)** | 1–10 µs | <500 ns |
+| **Throughput @ 512B** | ~890 Mbps | ~420 Gbps |
+| **Kernel stack overhead** | Full TCP/IP stack processing | Minimal (pre-filtered by XDP BPF program) |
+| **Header building** | Kernel does it | Application does it |
+| **Buffer management** | Kernel-managed; bounded | Application-managed; pre-allocated UMEM |
+| **Driver dependency** | Works on all drivers | Requires libxdp + libbpf support |
+| **Zero-copy support** | No | Yes (hardware-dependent) |
+
+#### RX Path: Detailed XDP Buffer Management
+
+1. **UMEM Setup:**
+   - Application allocates a contiguous user-space memory region (UMEM) — typically 128 MB or more.
+   - UMEM is divided into fixed-size 4 KB chunks (pages).
+   - Pages are pre-registered with the kernel via `xsk_umem__create()` using the `XSK_UMEM_PGSIZE_HUGE1GB` or similar flags for huge pages.
+   - Huge pages reduce TLB misses and improve cache locality.
+
+2. **Descriptor Rings:**
+   - **FillQ (application → kernel):** Application writes page indices to tell the kernel which UMEM pages are ready to receive data.
+   - **RX ring (kernel → application):** Kernel writes completed frame metadata (offset, length) for frames that arrived.
+   - Both rings are lock-free circular buffers in shared memory (no syscalls needed to drain).
+
+3. **Polling Loop (Zero-Copy RX):**
+   ```
+   while (running) {
+       // Refill kernel's FillQ with empty pages
+       refill_fill_queue();
+       
+       // Poll RX ring for completed frames
+       nb_rx = xsk_ring_cons__peek(&rx_ring, BATCH_SIZE, &idx);
+       if (nb_rx == 0) continue;  // No frames yet
+       
+       for (i = 0; i < nb_rx; i++) {
+           // Kernel has written frame data to UMEM at offset+length
+           const struct xdp_desc* desc = xsk_ring_cons__at(&rx_ring, idx + i);
+           const uint8_t* frame = (uint8_t*)umem_area + desc->addr;
+           uint16_t len = desc->len;
+           
+           // Parse headers, filter, invoke callback with payload
+           parseUdp(frame, len, udpView);
+           onPacket(udpView.payload, udpView.payloadLen);
+       }
+       xsk_ring_cons__release(&rx_ring, nb_rx);
+   }
+   ```
+
+#### TX Path: Detailed XDP Buffer Management
+
+1. **TX Descriptor Ring Setup:**
+   - Application pre-allocates frame buffers in UMEM (typically preceding RX buffers in the same region).
+   - **TX ring (application → kernel):** Application writes frame descriptors (offset in UMEM, length).
+   - **Completion ring (kernel → application):** Kernel acknowledges which TX descriptors have been sent.
+
+2. **Batched TX Loop:**
+   ```
+   // Build frame in application-owned UMEM region
+   uint8_t* frame_buf = (uint8_t*)umem_area + tx_offset;
+   buildEthernetIpUdpFrame(frame_buf, payload, len);
+   
+   // Submit to TX ring (no syscall yet)
+   struct xdp_desc tx_desc = {
+       .addr = tx_offset,
+       .len = frame_len,
+   };
+   xsk_ring_prod__submit(&tx_ring, 1);
+   
+   // Kick hardware when batch is large enough (or on timeout)
+   if (pending_tx > BATCH_THRESHOLD) {
+       sendto(xsk_fd, NULL, 0, 0, NULL, 0);  // One syscall per batch, not per packet
+   }
+   
+   // Poll completion ring to reclaim buffers
+   nb_completed = xsk_ring_cons__peek(&comp_ring, BATCH_SIZE, &idx);
+   // Mark pages as available for reuse
+   ```
+
+3. **Hardware Interaction:**
+   - The kernel manages a hardware TX ring that is populated from the application's TX descriptor ring.
+   - The actual frame transmission (DMA to hardware) happens without application involvement.
+   - Completion is signaled back asynchronously, allowing pipelined operation.
+
+#### Implications for High-Frequency Trading & Real-Time Systems
+
+- **Jitter:** AF_XDP eliminates most kernel-induced jitter (page faults, GC, context switches).
+- **Predictability:** Latency is dominated by hardware latency, not software scheduling.
+- **Scalability:** Multiple AF_XDP sockets can be bound to different NIC queues, enabling CPU affinity and linear scaling.
+- **Cost:** AF_XDP requires more application code (header building, frame parsing) but offers ~1000× latency improvement and ~500× throughput improvement over traditional UDP sockets.
+
 ### Aeron
 [Aeron](https://github.com/real-logic/aeron) is a high-performance message-transport library designed for low-latency IPC and network messaging. This project uses the **Aeron C++ client** to publish messages to a channel/stream. Common channels include `aeron:ipc` (shared-memory IPC on the same host).
 
