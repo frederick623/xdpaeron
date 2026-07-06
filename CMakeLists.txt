@@ -63,6 +63,32 @@ if(UNIX AND NOT APPLE)
         message(STATUS "xdpaeron: aeron_xdp_forwarder disabled (needs Linux, libxdp, libbpf, Aeron)")
     endif()
 
+    # ── Shared-memory IPC counterparts (no Aeron required; only need libxdp) ──
+    if(XDP_INCLUDE_DIR AND XDP_LIBRARY AND BPF_LIBRARY)
+        add_executable(shm_udp_relayer shm_relayer.cpp)
+        target_include_directories(shm_udp_relayer PRIVATE ${XDP_INCLUDE_DIR})
+        target_link_libraries(shm_udp_relayer
+            PRIVATE
+                ${XDP_LIBRARY}
+                ${BPF_LIBRARY}
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: shm_udp_relayer enabled")
+
+        add_executable(shm_xdp_forwarder shm_forwarder.cpp)
+        target_include_directories(shm_xdp_forwarder PRIVATE ${XDP_INCLUDE_DIR})
+        target_link_libraries(shm_xdp_forwarder
+            PRIVATE
+                ${XDP_LIBRARY}
+                ${BPF_LIBRARY}
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: shm_xdp_forwarder enabled")
+    else()
+        message(STATUS "xdpaeron: shm_udp_relayer disabled (needs Linux, libxdp, libbpf)")
+        message(STATUS "xdpaeron: shm_xdp_forwarder disabled (needs Linux, libxdp, libbpf)")
+    endif()
+
     # ── Unit tests (no libxdp required: stub headers are used) ────────────────
     enable_testing()
     add_executable(xdpaeron_tests tests/test_parse.cpp)
@@ -75,6 +101,17 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(xdpaeron_tests PRIVATE Threads::Threads)
     add_test(NAME parse_tests COMMAND xdpaeron_tests)
     message(STATUS "xdpaeron: unit tests enabled (target: xdpaeron_tests)")
+
+    # ── Shared-memory IPC unit tests (no libxdp required) ─────────────────────
+    add_executable(xdpaeron_shmipc_tests tests/test_shmipc.cpp)
+    target_compile_features(xdpaeron_shmipc_tests PRIVATE cxx_std_20)
+    target_include_directories(xdpaeron_shmipc_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_libraries(xdpaeron_shmipc_tests PRIVATE Threads::Threads)
+    add_test(NAME shmipc_tests COMMAND xdpaeron_shmipc_tests)
+    message(STATUS "xdpaeron: shmipc tests enabled (target: xdpaeron_shmipc_tests)")
 
     # ── Benchmarks (requires Google Benchmark; graceful skip if absent) ────────
     find_package(benchmark QUIET)
