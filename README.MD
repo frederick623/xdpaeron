@@ -1,4 +1,4 @@
-# xdpaeron
+# xdpio
 
 A high-performance UDP↔Aeron bridge built on **AF_XDP** (Linux kernel-bypass networking). It can operate in two directions:
 
@@ -268,9 +268,9 @@ High-performance applications can offload heavy consumer logic to a separate thr
 ## Benchmark
 
 ```
-root@30874c415336:/ebpf/xdpaeron# ./xdpaeron_bench 
+root@30874c415336:/ebpf/xdpio# ./xdpio_bench 
 2026-06-28T11:20:37+00:00
-Running ./xdpaeron_bench
+Running ./xdpio_bench
 Run on (2 X 48 MHz CPU s)
 Load Average: 0.00, 0.02, 0.00
 ***WARNING*** Library was built as DEBUG. Timings may be affected.
@@ -383,10 +383,10 @@ Both `xdpReceiveLoop` (RX) and `AeronIpcSource::readLoop` (Aeron) install `SIGIN
 
 ```bash
 cmake -B build
-cmake --build build --target xdpaeron_tests
+cmake --build build --target xdpio_tests
 ctest --test-dir build
 # or run the binary directly for per-test output:
-./build/xdpaeron_tests
+./build/xdpio_tests
 ```
 
 The test binary requires no external libraries beyond `libc`/`libpthread` — libxdp and libbpf are not needed.
