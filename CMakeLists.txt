@@ -128,6 +128,19 @@ if(UNIX AND NOT APPLE)
                 Threads::Threads
         )
         message(STATUS "xdpaeron: benchmarks enabled (target: xdpaeron_bench)")
+
+        add_executable(xdpaeron_bench_shm benchmarks/bench_shm_path.cpp)
+        target_compile_features(xdpaeron_bench_shm PRIVATE cxx_std_20)
+        target_include_directories(xdpaeron_bench_shm
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        target_link_libraries(xdpaeron_bench_shm
+            PRIVATE
+                benchmark::benchmark
+                Threads::Threads
+        )
+        message(STATUS "xdpaeron: shm benchmarks enabled (target: xdpaeron_bench_shm)")
     else()
         message(STATUS "xdpaeron: benchmarks disabled (install libbenchmark-dev to enable)")
     endif()
