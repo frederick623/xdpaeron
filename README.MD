@@ -265,12 +265,31 @@ High-performance applications can offload heavy consumer logic to a separate thr
 
 ---
 
-## Benchmark
+## Benchmarks
+
+Benchmarks require [Google Benchmark](https://github.com/google/benchmark). Install it with:
+
+```bash
+sudo apt install libbenchmark-dev
+```
+
+### UDP path benchmark (`benchmarks/bench_udp_path.cpp`)
+
+Compares AF_XDP user-space parsing against ordinary kernel UDP receive.
+
+**Build and run:**
+
+```bash
+cmake -S . -B build && cmake --build build --target xdpaeron_bench
+./build/xdpaeron_bench [--benchmark_format=json] [--benchmark_filter=...]
+```
+
+**Sample output:**
 
 ```
-root@30874c415336:/ebpf/xdpio# ./xdpio_bench 
+root@30874c415336:/ebpf/xdpio# ./build/xdpaeron_bench
 2026-06-28T11:20:37+00:00
-Running ./xdpio_bench
+Running ./build/xdpaeron_bench
 Run on (2 X 48 MHz CPU s)
 Load Average: 0.00, 0.02, 0.00
 ***WARNING*** Library was built as DEBUG. Timings may be affected.
@@ -285,7 +304,7 @@ BM_UdpKernelRecv/512            1068 ns          548 ns      1283269 bytes_per_s
 BM_UdpKernelRecv/1400           1296 ns          624 ns      1113067 bytes_per_second=2.08808Gi/s kernel-udp-recv
 ```
 
-### Benchmark interpretation
+**Benchmark descriptions:**
 
 | Benchmark | What it measures |
 |-----------|-----------------|
@@ -293,6 +312,29 @@ BM_UdpKernelRecv/1400           1296 ns          624 ns      1113067 bytes_per_s
 | `BM_UdpKernelRecv` | One `recvfrom()` call on a loopback `SOCK_DGRAM` socket. A background sender thread pre-fills the socket receive buffer so the benchmark measures steady-state kernel delivery cost, not idle wakeup latency. |
 
 Both benchmarks sweep payload sizes of **64, 512, and 1400 bytes**. The AF_XDP parse+filter time is essentially payload-independent (~1.2 ns) because the parser only touches the fixed-size headers; the kernel path grows with payload size due to copy costs. The gap (~400–500×) represents the syscall + kernel networking stack overhead that AF_XDP eliminates.
+
+---
+
+### Shared-memory path benchmark (`benchmarks/bench_shm_path.cpp`)
+
+Benchmarks the shared-memory IPC receive path and the full UDP → shared-memory → consumer pipeline.
+
+**Build and run:**
+
+```bash
+cmake -S . -B build && cmake --build build --target xdpaeron_bench_shm
+./build/xdpaeron_bench_shm [--benchmark_format=json] [--benchmark_filter=...]
+```
+
+**Benchmark descriptions:**
+
+| Benchmark | What it measures |
+|-----------|-----------------|
+| `BM_ShmIpcPublish` | Isolated `ShmIpcPublisher::publish()` throughput. A background drain thread keeps the ring continuously empty so the publisher never encounters back-pressure; isolates the write-side cost (memcpy + atomic store). |
+| `BM_ShmIpcRecv` | Isolated shared-memory consumer throughput. A background producer keeps the ring saturated; each iteration busy-polls one slot, copies the payload, and releases the slot. Includes cross-CPU cache-line transfer latency since producer and consumer run on separate threads. |
+| `BM_UdpKernelPlusShmRecv` | Full pipeline: a background sender saturates a loopback UDP socket; a background relayer thread calls `recvfrom()` then `publish()` (mirroring `shm_udp_relayer`'s hot path); each benchmark iteration drains one shm slot. Measures end-to-end throughput through the entire kernel UDP + shared-memory stack. |
+
+All three benchmarks sweep payload sizes of **64, 512, and 1400 bytes**.
 
 ---
 
@@ -381,19 +423,37 @@ Both `xdpReceiveLoop` (RX) and `AeronIpcSource::readLoop` (Aeron) install `SIGIN
 
 ### Running the tests
 
+Both test binaries require no external libraries beyond `libc`/`libpthread` — libxdp and libbpf are not needed.
+
+**Frame-parsing and TX helper tests (`tests/test_parse.cpp`):**
+
 ```bash
 cmake -B build
-cmake --build build --target xdpio_tests
-ctest --test-dir build
+cmake --build build --target xdpaeron_tests
+ctest --test-dir build -R parse_tests
 # or run the binary directly for per-test output:
-./build/xdpio_tests
+./build/xdpaeron_tests
 ```
 
-The test binary requires no external libraries beyond `libc`/`libpthread` — libxdp and libbpf are not needed.
+**Shared-memory IPC tests (`tests/test_shmipc.cpp`):**
+
+```bash
+cmake -B build
+cmake --build build --target xdpaeron_shmipc_tests
+ctest --test-dir build -R shmipc_tests
+# or run the binary directly for per-test output:
+./build/xdpaeron_shmipc_tests
+```
+
+**Run all tests at once:**
+
+```bash
+ctest --test-dir build
+```
 
 ### Test runner
 
-`tests/test_parse.cpp` uses a minimal hand-rolled runner: a `CHECK(cond)` macro that increments global `g_pass`/`g_fail` counters and prints `FAIL file:line expression` to stderr on failure. The `main()` function runs every test function in sequence and exits with code 0 if all pass, 1 otherwise.
+Both test files use a minimal hand-rolled runner: a `CHECK(cond)` macro that increments global `g_pass`/`g_fail` counters and prints `FAIL file:line expression` to stderr on failure. The `main()` function runs every test function in sequence and exits with code 0 if all pass, 1 otherwise.
 
 ### Frame builder helper
 
@@ -453,4 +513,41 @@ The test binary requires no external libraries beyond `libc`/`libpthread` — li
 | `resolveIpv4_broadcast` | `"255.255.255.255"` resolves correctly |
 | `resolveIpv4_invalidOctet` | `"256.0.0.0"` → `0` (invalid, not resolvable) |
 | `resolveIpv4_emptyString` | `""` → `0` |
+
+---
+
+## Shared-Memory IPC Test Suite (`tests/test_shmipc.cpp`)
+
+Tests for `ShmIpcPublisher` / `ShmIpcSource` in `shmipc.h`. The test binary links only `libpthread`; no Aeron, libxdp, or libbpf is required.
+
+### `shmName` test cases
+
+| Test | What it verifies |
+|------|-----------------|
+| `shmName_plain` | Plain channel name produces `/channel_streamId` |
+| `shmName_leading_slash` | Leading `/` in the channel name is preserved and not doubled |
+| `shmName_colon_replaced` | Colons (illegal in POSIX shm names) are replaced with `_` |
+| `shmName_internal_slash_replaced` | Internal `/` characters are replaced with `_` |
+| `shmName_empty_channel` | Empty channel string produces a name starting with `/` |
+
+### Publish / receive round-trip test cases
+
+| Test | What it verifies |
+|------|-----------------|
+| `publish_receive_single` | A single published message is received intact by a `ShmIpcSource` reader thread |
+| `publish_receive_multiple` | Five distinct messages are received in order with correct byte content |
+
+### `publish()` edge-case test cases
+
+| Test | What it verifies |
+|------|-----------------|
+| `publish_zero_length_rejected` | `publish(data, 0)` returns `false` |
+| `publish_max_payload_accepted` | `publish()` with exactly `SHM_MAX_PAYLOAD` bytes succeeds and is received at full length |
+| `publish_oversized_rejected` | `publish()` with `SHM_MAX_PAYLOAD + 1` bytes returns `false` |
+
+### Ring wrap-around test case
+
+| Test | What it verifies |
+|------|-----------------|
+| `ring_wraparound` | Publishing `SHM_CAPACITY + 16` messages exercises the modular wrap of `write_pos`/`read_pos`; all messages are received |
 
