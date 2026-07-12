@@ -15,8 +15,8 @@
 //       full syscall + kernel networking stack cost per packet.
 //
 // Build & run:
-//   cmake -S . -B build && cmake --build build --target xdpaeron_bench
-//   ./build/xdpaeron_bench [--benchmark_format=json] [--benchmark_filter=...]
+//   cmake -S . -B build && cmake --build build --target xdpio_bench
+//   ./build/xdpio_bench [--benchmark_format=json] [--benchmark_filter=...]
 //
 // Payload sizes tested: 64, 512, 1400 bytes.
 //

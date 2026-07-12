@@ -6,7 +6,7 @@
 //   ShmIpcSource  — receives messages via run() (driven from a thread)
 //
 // Build (handled by CMakeLists.txt):
-//   cmake -B build && cmake --build build --target xdpaeron_shmipc_tests
+//   cmake -B build && cmake --build build --target xdpio_shmipc_tests
 //   ctest --test-dir build -R shmipc
 
 #include <atomic>
@@ -68,7 +68,7 @@ static void test_shmName_empty_channel() {
 // Shared-memory name used by all publish/receive tests (avoids collision with
 // any live segments left from a prior run — ShmIpcPublisher unlinks stale ones
 // in its constructor).
-static const char kTestChannel[] = "xdpaeron_test";
+static const char kTestChannel[] = "xdpio_test";
 static constexpr int32_t kStreamId = 9887;
 
 static void test_publish_receive_single() {

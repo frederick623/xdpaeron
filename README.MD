@@ -280,16 +280,16 @@ Compares AF_XDP user-space parsing against ordinary kernel UDP receive.
 **Build and run:**
 
 ```bash
-cmake -S . -B build && cmake --build build --target xdpaeron_bench
-./build/xdpaeron_bench [--benchmark_format=json] [--benchmark_filter=...]
+cmake -S . -B build && cmake --build build --target xdpio_bench
+./build/xdpio_bench [--benchmark_format=json] [--benchmark_filter=...]
 ```
 
 **Sample output:**
 
 ```
-root@30874c415336:/ebpf/xdpio# ./build/xdpaeron_bench
+root@30874c415336:/ebpf/xdpio# ./build/xdpio_bench
 2026-06-28T11:20:37+00:00
-Running ./build/xdpaeron_bench
+Running ./build/xdpio_bench
 Run on (2 X 48 MHz CPU s)
 Load Average: 0.00, 0.02, 0.00
 ***WARNING*** Library was built as DEBUG. Timings may be affected.
@@ -322,8 +322,8 @@ Benchmarks the shared-memory IPC receive path and the full UDP → shared-memory
 **Build and run:**
 
 ```bash
-cmake -S . -B build && cmake --build build --target xdpaeron_bench_shm
-./build/xdpaeron_bench_shm [--benchmark_format=json] [--benchmark_filter=...]
+cmake -S . -B build && cmake --build build --target xdpio_bench_shm
+./build/xdpio_bench_shm [--benchmark_format=json] [--benchmark_filter=...]
 ```
 
 **Benchmark descriptions:**
@@ -429,20 +429,20 @@ Both test binaries require no external libraries beyond `libc`/`libpthread` — 
 
 ```bash
 cmake -B build
-cmake --build build --target xdpaeron_tests
+cmake --build build --target xdpio_tests
 ctest --test-dir build -R parse_tests
 # or run the binary directly for per-test output:
-./build/xdpaeron_tests
+./build/xdpio_tests
 ```
 
 **Shared-memory IPC tests (`tests/test_shmipc.cpp`):**
 
 ```bash
 cmake -B build
-cmake --build build --target xdpaeron_shmipc_tests
+cmake --build build --target xdpio_shmipc_tests
 ctest --test-dir build -R shmipc_tests
 # or run the binary directly for per-test output:
-./build/xdpaeron_shmipc_tests
+./build/xdpio_shmipc_tests
 ```
 
 **Run all tests at once:**

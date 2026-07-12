@@ -6,7 +6,7 @@
 //   resolveIpv4 — dotted-decimal / DNS → network-order uint32_t
 //
 // Build (handled by CMakeLists.txt):
-//   cmake -B build && cmake --build build --target xdpaeron_tests
+//   cmake -B build && cmake --build build --target xdpio_tests
 //   ctest --test-dir build
 
 #include <arpa/inet.h>
